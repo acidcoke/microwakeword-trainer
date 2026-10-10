@@ -1,7 +1,7 @@
 # =============================================================================
 # ru_stop.yaml — Russian "Стоп" stop-word for linux-voice-assistant
 #
-#   ./run_mww.sh --config ru_stop.yaml
+#   uv run mww run --config ru_stop.yaml
 #
 # Why this model exists: the stock English stop.tflite cannot separate a
 # Russian "стоп" from room noise at any threshold or sliding_window_size —

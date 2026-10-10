@@ -2,9 +2,9 @@
 # ru_jarvis.yaml — Production config for Russian "Джарвис" (microWakeWord)
 #
 # Usage:
-#   ./run_mww.sh --config ru_jarvis.yaml
-#   ./run_mww.sh --config ru_jarvis.yaml --phase train
-#   ./run_mww.sh --config ru_jarvis.yaml --phase export
+#   uv run mww run --config ru_jarvis.yaml
+#   uv run mww run --config ru_jarvis.yaml --phase train
+#   uv run mww run --config ru_jarvis.yaml --phase export
 #
 # For a clean starting template, see example_ru_jarvis.yaml.
 # =============================================================================

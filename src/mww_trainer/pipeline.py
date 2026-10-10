@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Standalone microWakeWord training pipeline.
 
@@ -7,19 +6,19 @@ Trains a streaming wake word model using the official microWakeWord package
 quantised TFLite model compatible with pymicro_wakeword and ESPHome.
 
 Quick start:
-    chmod +x setup_mww.sh && ./setup_mww.sh
+    uv sync
+    uv run mww setup
     cp example_ru_jarvis.yaml my_wakeword.yaml
     # edit my_wakeword.yaml for your target phrase
-    ./run_mww.sh --config my_wakeword.yaml
+    uv run mww run --config my_wakeword.yaml
 
-Individual phases:
-    ./run_mww.sh --config my_wakeword.yaml --phase voices
-    ./run_mww.sh --config my_wakeword.yaml --phase train
-    ./run_mww.sh --config my_wakeword.yaml --phase export
-    ./run_mww.sh --config my_wakeword.yaml --phase test
+Individual phases (comma-separate to run several in order):
+    uv run mww run --config my_wakeword.yaml --phase voices
+    uv run mww run --config my_wakeword.yaml --phase features,train,export
+    uv run mww run --config my_wakeword.yaml --phase test
 
 Phases (run in order for a fresh training):
-    setup      Verify microwakeword package, TF, and Piper binary are available
+    setup      Download the Piper binary for this machine; verify TF/microwakeword
     voices     Download Piper ONNX voice models from HuggingFace
     generate   Synthesise positive + adversarial negative TTS clips via piper
     features   Extract pymicro_features spectrograms + download HF negatives
@@ -27,8 +26,7 @@ Phases (run in order for a fresh training):
     export     Convert to streaming TFLite (uint8 quantised) + write JSON manifest
     test       Evaluate the TFLite model on test WAV clips (not run in 'all')
 
-Requires: setup_mww.sh (installs microwakeword, TensorFlow, pymicro-features, etc.)
-Output:   <model_name>_mww.tflite + <model_name>_mww.json at the project root
+Output:   <model_name>_mww.tflite + <model_name>_mww.json in the working directory
 
 Feature extraction uses pymicro_features.MicroFrontend (not librosa).
 This is critical: inference and training must use the same frontend to avoid
@@ -39,10 +37,12 @@ import argparse
 import json
 import logging
 import os
+import platform
 import random
 import shutil
 import subprocess
 import sys
+import tarfile
 import types
 import uuid
 import zipfile
@@ -74,6 +74,17 @@ OUTPUT_DIR = WORK_DIR / "output"
 PIPER_BIN_DIR = WORK_DIR / "piper_binary" / "piper"
 PIPER_BIN = PIPER_BIN_DIR / "piper"
 PIPER_ESPEAK = PIPER_BIN_DIR / "espeak-ng-data"
+
+# Standalone Piper release, one tarball per CPU architecture. The aarch64 build
+# is what runs on a DGX Spark (Grace) or a Raspberry Pi; the layout inside is
+# identical to x86_64.
+PIPER_RELEASE = "https://github.com/rhasspy/piper/releases/download/2023.11.14-2"
+PIPER_TARBALLS = {
+    "x86_64": "piper_linux_x86_64.tar.gz",
+    "amd64": "piper_linux_x86_64.tar.gz",
+    "aarch64": "piper_linux_aarch64.tar.gz",
+    "arm64": "piper_linux_aarch64.tar.gz",
+}
 
 # ===========================================================================
 # Logging
@@ -175,17 +186,57 @@ def load_config(config_path: str) -> dict:
 # Utilities
 # ===========================================================================
 
-def run(cmd: str, **kw):
-    log.info("$ %s", cmd)
-    subprocess.run(cmd, shell=True, check=True, **kw)
+def download(url: str, dest: Path):
+    """Fetch url to dest, skipping files that are already there.
 
+    Written to a .part file and renamed on success, so an interrupted run
+    leaves nothing that a later run would mistake for a finished download.
+    """
+    import requests
+    from tqdm import tqdm
 
-def wget(url: str, dest: Path):
     if dest.exists() and dest.stat().st_size > 4096:
         log.info("  skip (exists): %s", dest.name)
         return
     dest.parent.mkdir(parents=True, exist_ok=True)
-    run(f'wget -q --show-progress -O "{dest}" "{url}"')
+    tmp = dest.with_name(dest.name + ".part")
+    log.info("  GET %s", url)
+    with requests.get(url, stream=True, timeout=60) as resp:
+        resp.raise_for_status()
+        total = int(resp.headers.get("content-length", 0)) or None
+        with open(tmp, "wb") as f, tqdm(total=total, unit="B", unit_scale=True,
+                                        desc=dest.name, leave=False) as bar:
+            for chunk in resp.iter_content(chunk_size=1 << 20):
+                f.write(chunk)
+                bar.update(len(chunk))
+    tmp.replace(dest)
+
+
+def ensure_piper() -> Path:
+    """Download and unpack the Piper binary for this CPU if it is missing."""
+    if PIPER_BIN.exists():
+        log.info("  Piper binary: %s", PIPER_BIN)
+        return PIPER_BIN
+
+    if sys.platform != "linux":
+        raise RuntimeError(f"Piper binary download is only wired up for Linux (got {sys.platform})")
+    machine = platform.machine().lower()
+    tarball = PIPER_TARBALLS.get(machine)
+    if tarball is None:
+        raise RuntimeError(f"No Piper binary for CPU architecture {machine!r}")
+
+    log.info("  Downloading Piper binary (%s)...", machine)
+    archive = PIPER_BIN_DIR.parent / tarball
+    download(f"{PIPER_RELEASE}/{tarball}", archive)
+    with tarfile.open(archive) as tar:
+        if hasattr(tarfile, "data_filter"):
+            tar.extractall(PIPER_BIN_DIR.parent, filter="data")
+        else:
+            tar.extractall(PIPER_BIN_DIR.parent)
+    archive.unlink()
+    PIPER_BIN.chmod(0o755)
+    log.info("  Piper binary ready: %s", PIPER_BIN)
+    return PIPER_BIN
 
 
 def count_wav(d: Path) -> int:
@@ -198,6 +249,16 @@ def _is_latin(text: str) -> bool:
     return total > 0 and latin / total > 0.5
 
 
+def _piper_env() -> dict:
+    """Environment for the standalone Piper binary and its bundled libraries."""
+    env = os.environ.copy()
+    env["LD_LIBRARY_PATH"] = (
+        str(PIPER_BIN_DIR.resolve()) + ":" + env.get("LD_LIBRARY_PATH", "")
+    )
+    env["ESPEAK_DATA_PATH"] = str(PIPER_ESPEAK.resolve())
+    return env
+
+
 def synthesize_clip(phrase: str, voice_onnx: str, out_path: Path,
                     length_scale: float = 1.0, noise_scale: float = 0.667,
                     noise_w: float = 0.8) -> bool:
@@ -205,19 +266,13 @@ def synthesize_clip(phrase: str, voice_onnx: str, out_path: Path,
     import scipy.io.wavfile as wavfile
     import scipy.signal
 
-    env = os.environ.copy()
-    env["LD_LIBRARY_PATH"] = (
-        str(PIPER_BIN_DIR.resolve()) + ":" + env.get("LD_LIBRARY_PATH", "")
-    )
-    env["ESPEAK_DATA_PATH"] = str(PIPER_ESPEAK.resolve())
-
     result = subprocess.run(
         [str(PIPER_BIN.resolve()), "--model", str(voice_onnx),
          "--output_file", str(out_path),
          "--length_scale", str(length_scale),
          "--noise_scale", str(noise_scale),
          "--noise_w", str(noise_w)],
-        input=phrase, text=True, capture_output=True, env=env,
+        input=phrase, text=True, capture_output=True, env=_piper_env(),
     )
     if result.returncode != 0 or not out_path.exists() or out_path.stat().st_size <= 44:
         return False
@@ -534,47 +589,66 @@ def extract_features_from_dir(
 # Phase: setup
 # ===========================================================================
 
-def phase_setup(cfg: dict):
-    log.info("=" * 60)
-    log.info("Phase: setup — verify environment")
-    log.info("=" * 60)
-
-    # Check Piper binary
-    if not PIPER_BIN.exists():
-        raise FileNotFoundError(
-            f"Piper binary not found: {PIPER_BIN}\n"
-            "Run setup_mww.sh first."
-        )
-    log.info("  Piper binary: %s", PIPER_BIN)
-
-    # Check microwakeword
+def _host_summary():
+    """Log what this machine brings to a run: CPU, memory, accelerators."""
+    log.info("  Host: %s %s, %d CPU cores, Python %s",
+             platform.system(), platform.machine(), os.cpu_count() or 0,
+             platform.python_version())
     try:
-        import microwakeword  # noqa: F401
-        log.info("  microwakeword: installed")
-    except ImportError:
-        raise ImportError(
-            "microwakeword package not installed.\n"
-            "Run setup_mww.sh first, or:\n"
-            "  pip install git+https://github.com/kahrendt/microWakeWord.git"
-        )
+        pages = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+        log.info("  Memory: %.0f GB", pages / 1024 ** 3)
+    except (ValueError, OSError, AttributeError):
+        pass
+    log.info("  TTS workers: %d (override with MWW_GEN_WORKERS)", GEN_WORKERS)
 
-    # Check TensorFlow
+
+def phase_setup(cfg: Optional[dict] = None):
+    """Make this machine ready to train. Needs no config — `mww setup` calls it."""
+    log.info("=" * 60)
+    log.info("Phase: setup — prepare and verify environment")
+    log.info("=" * 60)
+
+    _host_summary()
+
+    ensure_piper()
+    result = subprocess.run([str(PIPER_BIN.resolve()), "--version"],
+                            capture_output=True, text=True, env=_piper_env())
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Piper binary does not run on this machine:\n{result.stderr.strip()}\n"
+            f"Delete {PIPER_BIN_DIR.parent} and re-run `mww setup`."
+        )
+    log.info("  Piper: %s", (result.stdout or result.stderr).strip())
+
+    missing = []
+    for module in ("microwakeword.layers.stream", "pymicro_features", "audiomentations",
+                   "mmap_ninja", "scipy", "yaml", "huggingface_hub"):
+        try:
+            __import__(module)
+            log.info("  %-28s ok", module)
+        except ImportError as exc:
+            log.error("  %-28s MISSING (%s)", module, exc)
+            missing.append(module)
+
     try:
         import tensorflow as tf
-        log.info("  TensorFlow: %s", tf.__version__)
-    except ImportError:
-        raise ImportError("TensorFlow not found. Run setup_mww.sh first.")
+        log.info("  %-28s %s", "tensorflow", tf.__version__)
+        gpus = tf.config.list_physical_devices("GPU")
+        if gpus:
+            log.info("  Training device: GPU (%s)", ", ".join(g.name for g in gpus))
+        else:
+            # The expected case on a DGX Spark and other aarch64 hosts: PyPI's
+            # TensorFlow for Linux aarch64 is a CPU build. The model is small
+            # enough that the Grace cores train it in a sensible time.
+            log.info("  Training device: CPU (%d threads)", os.cpu_count() or 0)
+    except ImportError as exc:
+        log.error("  %-28s MISSING (%s)", "tensorflow", exc)
+        missing.append("tensorflow")
 
-    # Check pymicro_features
-    try:
-        from pymicro_features import MicroFrontend  # noqa: F401
-        log.info("  pymicro_features: available")
-    except ImportError:
+    if missing:
         raise ImportError(
-            "pymicro_features not installed.\n"
-            "Run: pip install pymicro-features"
+            f"Missing packages: {', '.join(missing)}. Run `uv sync` in the repo."
         )
-
     log.info("  Setup OK.")
 
 
@@ -595,11 +669,11 @@ def phase_voices(cfg: dict) -> list[str]:
         json_f = MODELS_DIR / f"{name}.onnx.json"
         base = f"{cfg['primary_voices_base_url']}/{suffix}/{name}"
         try:
-            wget(f"{base}.onnx", onnx)
-            wget(f"{base}.onnx.json", json_f)
+            download(f"{base}.onnx", onnx)
+            download(f"{base}.onnx.json", json_f)
             available.append(str(onnx.resolve()))
             log.info("  ✓ %s", name)
-        except subprocess.CalledProcessError as exc:
+        except Exception as exc:
             log.warning("  Failed: %s (%s)", name, exc)
 
     if not available:
@@ -613,11 +687,11 @@ def phase_voices(cfg: dict) -> list[str]:
             json_f = MODELS_DIR / f"{name}.onnx.json"
             base = f"{cfg['secondary_voices_base_url']}/{suffix}/{name}"
             try:
-                wget(f"{base}.onnx", onnx)
-                wget(f"{base}.onnx.json", json_f)
+                download(f"{base}.onnx", onnx)
+                download(f"{base}.onnx.json", json_f)
                 log.info("  ✓ %s (secondary)", name)
-            except subprocess.CalledProcessError:
-                log.warning("  Failed: %s", name)
+            except Exception as exc:
+                log.warning("  Failed: %s (%s)", name, exc)
 
     return available
 
@@ -1530,12 +1604,12 @@ def _test_with_official(mww, cfg: dict):
 
 def _test_manual(cfg: dict):
     """Fallback test using raw TFLite interpreter."""
-    log.info("  Manual test: python3 test_mww.py record/sample*.wav")
+    log.info("  Manual test: uv run mww test record/sample*.wav")
     wav_dir = Path("record")
     if wav_dir.exists():
         n = count_wav(wav_dir)
         if n > 0:
-            log.info("  Found %d WAV files in record/ — run test_mww.py manually", n)
+            log.info("  Found %d WAV files in record/ — run `mww test` on them", n)
 
 
 # ===========================================================================
@@ -1545,24 +1619,51 @@ def _test_manual(cfg: dict):
 ALL_PHASES = ["setup", "voices", "generate", "features", "train", "export", "test"]
 
 
-def main():
+def _parse_phases(value: str) -> list[str]:
+    phases = [p.strip() for p in value.split(",") if p.strip()]
+    for p in phases:
+        if p != "all" and p not in ALL_PHASES:
+            raise argparse.ArgumentTypeError(
+                f"unknown phase {p!r} (choose from all, {', '.join(ALL_PHASES)})"
+            )
+    if "all" in phases:
+        if len(phases) > 1:
+            raise argparse.ArgumentTypeError("'all' cannot be combined with other phases")
+        return [p for p in ALL_PHASES if p != "test"]
+    # Always pipeline order: each phase consumes what the previous one wrote.
+    return [p for p in ALL_PHASES if p in phases]
+
+
+def main(argv=None, prog=None):
     parser = argparse.ArgumentParser(
-        description="Standalone microWakeWord training pipeline",
+        prog=prog,
+        description="Run the microWakeWord training pipeline",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
     parser.add_argument("--config", required=True, help="YAML config file")
     parser.add_argument(
-        "--phase", choices=["all"] + ALL_PHASES, default="all",
-        help="Which phase to run (default: all except test)",
+        "--phase", type=_parse_phases, default="all",
+        help="Phase, or comma-separated phases, to run in pipeline order: "
+             f"all, {', '.join(ALL_PHASES)} (default: all — every phase except test)",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--cpu", action="store_true",
+        help="Hide any GPU from TensorFlow and train on the CPU",
+    )
+    args = parser.parse_args(argv)
+    phases = args.phase
+    run_all = phases == [p for p in ALL_PHASES if p != "test"]
+
+    if args.cpu:
+        # Must happen before TensorFlow is first imported (phases import it lazily).
+        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
     cfg = load_config(args.config)
-    run_all = args.phase == "all"
 
     log.info("=" * 60)
     log.info("microWakeWord Trainer — %s", cfg["model_name"])
+    log.info("  Phases:          %s", ", ".join(phases))
     log.info("  Architecture:    %s", cfg["architecture"])
     log.info("  Spectrogram:     %d frames × %d bins (%.0f ms context)",
              cfg["spectrogram_length"], N_MEL_BINS,
@@ -1579,21 +1680,18 @@ def main():
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    if run_all or args.phase == "setup":
-        phase_setup(cfg)
-    if run_all or args.phase == "voices":
-        phase_voices(cfg)
-    if run_all or args.phase == "generate":
-        phase_generate(cfg)
-    if run_all or args.phase == "features":
-        phase_features(cfg)
-    if run_all or args.phase == "train":
-        phase_train(cfg)
-    if run_all or args.phase == "export":
-        phase_export(cfg)
-    # test is NOT included in 'all' — run explicitly with --phase test
-    if args.phase == "test":
-        phase_test(cfg)
+    runners = {
+        "setup": phase_setup,
+        "voices": phase_voices,
+        "generate": phase_generate,
+        "features": phase_features,
+        "train": phase_train,
+        "export": phase_export,
+        # test is NOT included in 'all' — request it explicitly
+        "test": phase_test,
+    }
+    for phase in phases:
+        runners[phase](cfg)
 
     if run_all:
         tflite = Path(f"{cfg['model_name']}_mww.tflite")
@@ -1603,9 +1701,10 @@ def main():
             log.info("  ✓ %s (%.1f KB)", tflite, tflite.stat().st_size / 1024)
         log.info("")
         log.info("Test:")
-        log.info("  python3 test_mww.py record/sample*.wav")
+        log.info("  uv run mww test --model %s record/sample*.wav", tflite)
         log.info("=" * 60)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

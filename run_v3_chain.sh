@@ -34,7 +34,7 @@ if [ -s "$F/positive_val.npy" ]; then
 fi
 
 log "features (positives are reused; negatives and validation are built now)"
-./.venv/bin/python train_mww.py --config ru_stop.yaml --phase features \
+uv run mww run --config ru_stop.yaml --phase features \
     >> log_ru_stop_v3_features2.txt 2>&1
 for n in positive_train positive_val negative_train negative_val; do
   if [ ! -s "$F/$n.npy" ]; then
@@ -45,11 +45,11 @@ done
 ls -la "$F"/*.npy >> log_ru_stop_v3_chain.txt
 
 log "training"
-./.venv/bin/python train_mww.py --config ru_stop.yaml --phase train \
+uv run mww run --config ru_stop.yaml --phase train \
     >> log_ru_stop_v3_train.txt 2>&1 || { log "train failed"; exit 1; }
 
 log "exporting"
-./.venv/bin/python train_mww.py --config ru_stop.yaml --phase export \
+uv run mww run --config ru_stop.yaml --phase export \
     >> log_ru_stop_v3_train.txt 2>&1 || { log "export failed"; exit 1; }
 
 log "CHAIN DONE"

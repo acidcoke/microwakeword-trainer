@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Evaluate a trained microWakeWord TFLite model against WAV files.
 
@@ -9,8 +8,8 @@ Simulates the exact pymicro_wakeword inference loop used by linux-voice-assistan
   - Triggers when mean(window) > probability_cutoff
 
 Usage:
-  .venv/bin/python3 test_mww.py [--model MODEL.tflite] [--config MODEL.json] [WAV ...]
-  .venv/bin/python3 test_mww.py record/sample*.wav
+  uv run mww test [--model MODEL.tflite] [--config MODEL.json] [WAV ...]
+  uv run mww test --model my_model_mww.tflite record/sample*.wav
 
 Defaults to the MODEL_PATH / CONFIG_PATH set at the top of this file.
 If no WAV files are passed, all *.wav files in record/ are tested.
@@ -35,8 +34,9 @@ def load_model():
         import tensorflow as tf
         interp = tf.lite.Interpreter(str(MODEL_PATH))
     except Exception:
-        import tflite_runtime.interpreter as tflite
-        interp = tflite.Interpreter(str(MODEL_PATH))
+        # LiteRT is tf.lite's successor and is installed alongside microwakeword.
+        from ai_edge_litert.interpreter import Interpreter
+        interp = Interpreter(str(MODEL_PATH))
     interp.allocate_tensors()
     return interp
 
@@ -145,23 +145,26 @@ def detect(wav_path: str, interp, probability_cutoff: float,
     }
 
 
-def main():
+def main(argv=None, prog=None):
     global MODEL_PATH, CONFIG_PATH
     import argparse
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        prog=prog, description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--model", default=str(MODEL_PATH), help="TFLite model path")
     parser.add_argument("--config", default=None,
                         help="JSON manifest path (default: model path with .json suffix)")
     parser.add_argument("wavs", nargs="*", help="WAV files (default: record/*.wav)")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     MODEL_PATH = pathlib.Path(args.model)
     CONFIG_PATH = pathlib.Path(args.config) if args.config else MODEL_PATH.with_suffix(".json")
 
     wav_files = args.wavs if args.wavs else sorted(pathlib.Path("record").glob("*.wav"))
     if not wav_files:
-        print("Usage: python3 test_mww.py [--model MODEL.tflite] [WAV ...]")
-        sys.exit(1)
+        print("Usage: mww test [--model MODEL.tflite] [WAV ...]")
+        return 1
 
     # Load config
     with open(CONFIG_PATH) as f:
@@ -199,7 +202,8 @@ def main():
     for path, r in results:
         mark = "✓" if r["triggered"] else "✗"
         print(f"  {mark}  {pathlib.Path(path).name}  max_prob={r['max_prob']:.3f}  max_avg={r['max_avg']:.3f}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

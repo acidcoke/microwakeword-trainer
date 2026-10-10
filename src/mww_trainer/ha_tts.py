@@ -17,7 +17,9 @@ user's, so the recordings of the actual person remain untouched for evaluation
 — which is both the honest way to measure recall and the answer to "will it
 just overfit to my voice".
 
-    HA_TOKEN=... python tools/generate_ha_tts.py --out training/output/ru_stop/ha_tts_positive
+    HA_TOKEN=... uv run mww ha-tts --out training/output/ru_stop/ha_tts_positive
+
+Needs ffmpeg on PATH to transcode whatever format the TTS engine returns.
 """
 from __future__ import annotations
 
@@ -93,8 +95,11 @@ def fetch_as_wav(url: str, dest: Path) -> bool:
     return proc.returncode == 0 and dest.exists() and dest.stat().st_size > 1024
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
+def main(argv=None, prog=None) -> int:
+    ap = argparse.ArgumentParser(
+        prog=prog, description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--base", default=os.environ.get("HA_URL", "http://192.168.1.113:8123"))
     ap.add_argument("--engine", default="tts.google_cloud")
@@ -116,7 +121,7 @@ def main() -> int:
     ap.add_argument("--pitches", default=None, help="comma-separated; default -4,0,4")
     ap.add_argument("--holdout-voices", type=int, default=4,
                     help="how many voices go to the holdout side")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     speeds = [float(v) for v in args.speeds.split(",")] if args.speeds else SPEEDS
     pitches = [float(v) for v in args.pitches.split(",")] if args.pitches else PITCHES

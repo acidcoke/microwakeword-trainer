@@ -37,7 +37,7 @@ log "dropping negative arrays so they are rebuilt with the room clips"
 rm -f "$F/negative_train.npy" "$F/negative_val.npy"
 
 log "features (negatives only)"
-./.venv/bin/python train_mww.py --config ru_stop.yaml --phase features \
+uv run mww run --config ru_stop.yaml --phase features \
     >> log_ru_stop_v5_features.txt 2>&1
 for n in positive_train positive_val negative_train negative_val; do
   if [ ! -s "$F/$n.npy" ]; then
@@ -48,11 +48,11 @@ done
 ls -la "$F"/*.npy >> "$LOG"
 
 log "training"
-./.venv/bin/python train_mww.py --config ru_stop.yaml --phase train \
+uv run mww run --config ru_stop.yaml --phase train \
     >> log_ru_stop_v5_train.txt 2>&1 || { log "train failed"; exit 1; }
 
 log "exporting"
-./.venv/bin/python train_mww.py --config ru_stop.yaml --phase export \
+uv run mww run --config ru_stop.yaml --phase export \
     >> log_ru_stop_v5_train.txt 2>&1 || { log "export failed"; exit 1; }
 
 log "CHAIN DONE"

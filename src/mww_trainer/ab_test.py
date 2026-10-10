@@ -1,11 +1,10 @@
-#!/usr/bin/env python3
 """
 A/B test two TFLite models on the same false-positive clips.
 Compares an 'old' (baseline) and a 'new' model by swapping which TFLite
-test_mww.py loads (via shim MODEL_PATH) — so we don't touch production files.
+`mww test` loads (via shim MODEL_PATH) — so we don't touch production files.
 
 Usage:
-  python3 ab_test_fps.py OLD.tflite NEW.tflite DIR [DIR ...] [--config MODEL.json]
+  uv run mww ab-test OLD.tflite NEW.tflite DIR [DIR ...] [--config MODEL.json]
 
 The config (probability_cutoff, sliding_window_size) defaults to the JSON
 manifest next to NEW.tflite.
@@ -13,17 +12,14 @@ manifest next to NEW.tflite.
 import argparse
 import json
 import pathlib
-import importlib.util
 import sys
 
-_here = pathlib.Path(__file__).resolve().parent
-spec = importlib.util.spec_from_file_location("test_mww", _here / "test_mww.py")
-tm = importlib.util.module_from_spec(spec); spec.loader.exec_module(tm)
+from mww_trainer import evaluate as tm
 import numpy as np
 
 
 def run_model(model_path, wavs, cutoff, win):
-    # Patch MODEL_PATH used inside test_mww.load_model()
+    # Patch MODEL_PATH used inside evaluate.load_model()
     tm.MODEL_PATH = pathlib.Path(model_path)
     interp = tm.load_model()
     rows = []
@@ -34,14 +30,17 @@ def run_model(model_path, wavs, cutoff, win):
     return rows
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+def main(argv=None, prog=None):
+    parser = argparse.ArgumentParser(
+        prog=prog, description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("old", help="baseline .tflite model")
     parser.add_argument("new", help="candidate .tflite model")
     parser.add_argument("dirs", nargs="+", help="directories of FP WAV clips")
     parser.add_argument("--config", default=None,
                         help="JSON manifest (default: NEW model path with .json suffix)")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     cfg_path = pathlib.Path(args.config) if args.config \
         else pathlib.Path(args.new).with_suffix(".json")
@@ -53,7 +52,7 @@ def main():
     for d in args.dirs:
         wavs += sorted(pathlib.Path(d).glob("*.wav"))
     if not wavs:
-        print("no wavs found"); sys.exit(1)
+        print("no wavs found"); return 1
 
     print(f"A/B test: {len(wavs)} clips @ cutoff={cutoff} win={win}")
     print(f"  OLD: {args.old}")
@@ -96,6 +95,8 @@ def main():
     print(f"New FPs introduced (no trigger → trigger): {n_new_triggers_from_old_clean}")
     print(f"Net: {n_old_trig - n_new_trig:+d} triggers  ({n_old_trig}→{n_new_trig})")
 
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

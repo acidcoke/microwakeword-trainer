@@ -55,29 +55,55 @@ not recoverable by tuning alone.
 
 ## Requirements
 
-- Linux (tested on Ubuntu 22.04, Debian 12, WSL2)
-- Python 3.9+ with pip
+- Linux on x86_64 or aarch64 (tested on Ubuntu 22.04, Debian 12, WSL2; the
+  aarch64 path targets the NVIDIA DGX Spark — see below)
+- [uv](https://docs.astral.sh/uv/) — it fetches Python 3.12 and every
+  dependency itself; nothing is installed system-wide
 - ~15 GB disk space for training data
-- NVIDIA GPU strongly recommended (training takes 8–14 hours on CPU)
-- Internet access for HuggingFace downloads
+- Internet access for HuggingFace and GitHub downloads
+- `ffmpeg` only for the optional `elevenlabs` / `ha-tts` clip generators
 
 ## Quick Start
 
 ```bash
-# Clone the repo and set up the environment (one time only)
-git clone https://github.com/interkelstar/microwakeword-trainer.git
+# Install uv once, if you don't have it
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Clone (with the pinned microWakeWord submodule) and set up
+git clone --recurse-submodules https://github.com/interkelstar/microwakeword-trainer.git
 cd microwakeword-trainer
-chmod +x setup_mww.sh && ./setup_mww.sh
+uv sync          # creates .venv/ from uv.lock
+uv run mww setup # downloads the Piper binary for this CPU, verifies the install
 
 # Copy the example config and customise it for your wake word
 cp example_ru_jarvis.yaml my_wakeword.yaml
 # Edit my_wakeword.yaml: set model_name, target_phrases, voices, negatives
 
 # Run the full training pipeline
-./run_mww.sh --config my_wakeword.yaml
+uv run mww run --config my_wakeword.yaml
 ```
 
-Output files created at the project root after training:
+Already cloned without `--recurse-submodules`? Run
+`git submodule update --init` before `uv sync`.
+
+Everything is driven by the `mww` command; `uv run mww --help` lists the
+subcommands and `uv run mww <command> --help` shows each one's options:
+
+| Command             | What it does                                                   |
+|---------------------|----------------------------------------------------------------|
+| `mww setup`         | Download the Piper binary for this CPU, verify the environment |
+| `mww run`           | Run training pipeline phases from a YAML config                |
+| `mww test`          | Run a TFLite model over WAV files, pymicro_wakeword-style      |
+| `mww batch-test`    | Summarise which false-positive clips still trigger             |
+| `mww ab-test`       | Compare two models on the same false-positive clips            |
+| `mww elevenlabs`    | Generate extra positives with the ElevenLabs API               |
+| `mww ha-tts`        | Generate clips from Home Assistant's TTS engines               |
+| `mww channel-probe` | Put clips through the room/noise channel for inspection        |
+
+If you would rather not prefix every command with `uv run`, activate the
+environment once with `source .venv/bin/activate` and call `mww` directly.
+
+Output files created in the working directory after training:
 
 - `<model_name>_mww.tflite` — TFLite model ready for pymicro_wakeword
 - `<model_name>_mww.json` — Deployment manifest with inference parameters
@@ -88,7 +114,7 @@ The pipeline runs these phases in order:
 
 | Phase      | What it does                                                        | Time (CPU)  |
 |------------|---------------------------------------------------------------------|-------------|
-| `setup`    | Verify microwakeword, TF, pymicro_features are installed            | seconds     |
+| `setup`    | Download Piper for this CPU; verify microwakeword, TF, etc.         | seconds     |
 | `voices`   | Download Piper ONNX voice models from HuggingFace                   | 1–5 min     |
 | `generate` | Synthesise positive + adversarial negative TTS clips via piper      | 6–10 hours  |
 | `features` | Extract pymicro_features spectrograms + download HF negatives       | 1–3 hours   |
@@ -96,13 +122,17 @@ The pipeline runs these phases in order:
 | `export`   | Convert to streaming TFLite (uint8 quantised) + write JSON manifest | 5–15 min    |
 | `test`     | Evaluate TFLite model on test clips (optional, not run in "all")    | minutes     |
 
-Run individual phases with `--phase <name>`:
+Run individual phases with `--phase <name>`, or several at once as a
+comma-separated list (they always run in pipeline order):
 
 ```bash
-./run_mww.sh --config my_wakeword.yaml --phase train
-./run_mww.sh --config my_wakeword.yaml --phase export
-./run_mww.sh --config my_wakeword.yaml --phase test
+uv run mww run --config my_wakeword.yaml --phase train
+uv run mww run --config my_wakeword.yaml --phase features,train,export
+uv run mww run --config my_wakeword.yaml --phase test
 ```
+
+Every phase skips work whose output already exists, so an interrupted run can
+simply be started again.
 
 ## Config Reference
 
@@ -206,9 +236,8 @@ from your real environment and retrain.
 4. Re-run feature extraction and training:
 
 ```bash
-./run_mww.sh --config my_wakeword.yaml --phase features
-./run_mww.sh --config my_wakeword.yaml --phase train
-./run_mww.sh --config my_wakeword.yaml --phase export
+rm training/output/<model_name>/mww_features/negative_*.npy
+uv run mww run --config my_wakeword.yaml --phase features,train,export
 ```
 
 The `user_negatives/` directory is processed with dense windowing (1 window
@@ -219,43 +248,42 @@ Only put audio that triggered incorrectly (TV speech, background noise, etc.).
 
 ## Testing a Model
 
-Use `test_mww.py` to evaluate a trained model against WAV files.  The script
+Use `mww test` to evaluate a trained model against WAV files.  It
 simulates the exact pymicro_wakeword inference loop including the sliding
 window averaging:
 
 ```bash
 # Test against all WAV files in record/
-.venv/bin/python3 test_mww.py
+uv run mww test --model my_model_mww.tflite
 
 # Test specific files
-.venv/bin/python3 test_mww.py record/sample1.wav record/sample2.wav
+uv run mww test --model my_model_mww.tflite record/sample1.wav record/sample2.wav
 
 # Output shows per-frame probabilities and a TRIGGERED / no trigger result
 ```
 
-The default model and config paths are set at the top of `test_mww.py`;
-override them with `--model my_model_mww.tflite` (the JSON manifest is
-found automatically next to the model).
+The JSON manifest is found automatically next to the model; pass
+`--config` to use a different one.
 
 Two companion tools help with false-positive mining:
 
 ```bash
 # Batch-test a directory of FP clips at the production cutoff
-.venv/bin/python3 batch_test_fps.py --model my_model_mww.tflite fp_clips/
+uv run mww batch-test --model my_model_mww.tflite fp_clips/
 
 # A/B compare two model versions on the same FP clips
-.venv/bin/python3 ab_test_fps.py old_mww.tflite new_mww.tflite fp_clips/
+uv run mww ab-test old_mww.tflite new_mww.tflite fp_clips/
 ```
 
 ## ElevenLabs High-Quality Positives (Optional)
 
-`generate_elevenlabs.py` generates additional high-quality TTS clips using the
-ElevenLabs API (requires an API key with credits).  These are automatically
-picked up during feature extraction and can improve the naturalness of the
-positive class:
+`mww elevenlabs` generates additional high-quality TTS clips using the
+ElevenLabs API (requires an API key with credits, and `ffmpeg`).  These are
+automatically picked up during feature extraction and can improve the
+naturalness of the positive class:
 
 ```bash
-.venv/bin/python generate_elevenlabs.py --api-key YOUR_KEY --config my_wakeword.yaml
+ELEVENLABS_API_KEY=YOUR_KEY uv run mww elevenlabs --config my_wakeword.yaml
 ```
 
 Clips are saved to `training/output/<model_name>/elevenlabs_positive/`.
@@ -265,7 +293,7 @@ Clips are saved to `training/output/<model_name>/elevenlabs_positive/`.
 After a full training run, the `training/` directory contains:
 
 ```
-training/piper_binary/           # piper executable + shared libs (~150 MB)
+training/piper_binary/           # piper executable + shared libs for this CPU (~150 MB)
 training/piper_models/           # ONNX voice models (~280 MB for 4 voices)
 training/output/<model_name>/
   positive_train/                # TTS positive clips (~4 GB for 50k)
@@ -283,6 +311,54 @@ To clean up after training:
 ```bash
 rm -rf .venv training/
 ```
+
+## Running on an NVIDIA DGX Spark
+
+The Spark is an aarch64 machine (Grace CPU, 20 cores, 128 GB unified memory)
+with a Blackwell GB10 GPU.  The same commands work there unchanged and
+directly on the host — no container:
+
+```bash
+git clone --recurse-submodules https://github.com/interkelstar/microwakeword-trainer.git
+cd microwakeword-trainer
+uv sync
+uv run mww setup     # fetches piper_linux_aarch64; reports "Training device: CPU"
+uv run mww run --config my_wakeword.yaml
+```
+
+What is different on aarch64:
+
+- **Piper:** `mww setup` picks the aarch64 build of the standalone Piper
+  binary automatically.
+- **Dependencies:** `uv.lock` is resolved for both x86_64 and aarch64 Linux,
+  and every package in it ships an aarch64 wheel, so no compiler is needed.
+  (This is why `audiomentations` is held below 0.39: later versions hard-depend
+  on `python-stretch`, which has no aarch64 wheel.)
+- **Training runs on the CPU.**  PyPI's TensorFlow for Linux aarch64 is a
+  CPU-only build and there is no TensorFlow GPU wheel for the GB10 (sm_121),
+  so the GPU is not used.  The `cuda` extra is a no-op on aarch64.
+
+### What CPU-only costs
+
+Only the `train` phase could use a GPU at all — everything else is CPU-bound
+on any machine:
+
+| Phase      | Uses GPU elsewhere? | On the Spark                                                 |
+|------------|---------------------|--------------------------------------------------------------|
+| `generate` | no (Piper is CPU)   | Same as today: ~16 parallel Piper workers on 20 cores        |
+| `features` | no                  | Same; 128 GB unified memory comfortably fits the ~40 GB peak |
+| `train`    | yes                 | Roughly 0.5–3 h on CPU vs ~15–45 min on a discrete GPU       |
+| `export`   | no                  | Minutes                                                      |
+
+The model is tiny (~80 KB) and the training input pipeline is a Python
+generator, so a GPU would speed `train` up by roughly 2–4×, not by an order
+of magnitude.  Since TTS generation and feature extraction take most of the
+8–14 hours, a full run on the Spark should take about as long as on an x86
+workstation with a GPU — at most an hour or two longer.
+
+On an x86_64 machine with an NVIDIA GPU, `uv sync --extra cuda` installs the
+CUDA runtime from PyPI so TensorFlow can train on the GPU.  `mww run --cpu`
+forces CPU training anywhere.
 
 ## How It Works
 

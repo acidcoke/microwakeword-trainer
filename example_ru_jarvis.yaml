@@ -5,9 +5,9 @@
 # This is a template. Copy it, rename it, and modify it for your own wake word.
 #
 # Usage:
-#   ./run_mww.sh --config example_ru_jarvis.yaml
-#   ./run_mww.sh --config example_ru_jarvis.yaml --phase voices
-#   ./run_mww.sh --config example_ru_jarvis.yaml --phase train
+#   uv run mww run --config example_ru_jarvis.yaml
+#   uv run mww run --config example_ru_jarvis.yaml --phase voices
+#   uv run mww run --config example_ru_jarvis.yaml --phase train
 # =============================================================================
 
 # Name used for output files:

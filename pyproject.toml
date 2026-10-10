@@ -1,0 +1,68 @@
+[project]
+name = "microwakeword-trainer"
+version = "0.2.0"
+description = "Config-driven CLI pipeline for training microWakeWord streaming wake word models"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    # Git submodule at third_party/microWakeWord, see [tool.uv.sources].
+    "microwakeword",
+    # 2.19/2.20 is what the export phase's ExportArchive + is_tf_type patch was
+    # written against. Linux aarch64 wheels exist for both (DGX Spark, Jetson,
+    # Graviton); they are CPU-only, see README.
+    "tensorflow>=2.19,<2.21",
+    "pymicro-features>=2.0",
+    "scipy>=1.10.0",
+    "tqdm>=4.65.0",
+    "huggingface_hub>=0.20.0",
+    "PyYAML>=6.0",
+    "numpy>=1.26,<2",
+    # Required to read the HuggingFace negative dataset — without it the
+    # features phase silently skips HF negatives and FP rate suffers.
+    "mmap_ninja>=0.8",
+    # Room impulse responses + real background noise (augmentation: section).
+    # 0.39+ hard-imports python-stretch, which has no Linux aarch64 wheel and
+    # would need a C++ toolchain to build on a DGX Spark. Nothing here uses
+    # pitch shift or time stretch, so stay below it. This is also what holds
+    # numpy and scipy below 2.0 / 1.13.
+    "audiomentations>=0.36,<0.39",
+    "requests>=2.28",
+]
+
+[project.optional-dependencies]
+# Pulls the CUDA 12 runtime from PyPI so TensorFlow can use an NVIDIA GPU on
+# x86_64. There is no GPU-enabled TensorFlow wheel for Linux aarch64, so on a
+# DGX Spark this extra is a no-op and training runs on the Grace CPU.
+cuda = [
+    "tensorflow[and-cuda]>=2.19,<2.21 ; platform_machine == 'x86_64' and sys_platform == 'linux'",
+]
+
+[project.scripts]
+mww = "mww_trainer.cli:main"
+
+[tool.uv.sources]
+# A submodule pinned to a known-good commit — microWakeWord pulls in TensorFlow
+# and its API moves between commits. Bump deliberately, then retrain + retest.
+#
+# Editable on purpose: upstream's setup.py uses find_packages(), and
+# microwakeword/layers and microwakeword/audio have no __init__.py, so a normal
+# (git or wheel) install silently leaves them out and the train phase dies on
+# `import microwakeword.layers`. An editable install imports from the checkout,
+# which has them — the same way upstream's own instructions install it.
+microwakeword = { path = "third_party/microWakeWord", editable = true }
+
+[tool.uv]
+# Wheels must exist for both of these, so the lockfile is checked against the
+# DGX Spark (aarch64) as well as ordinary x86_64 workstations.
+required-environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'linux' and platform_machine == 'aarch64'",
+]
+
+[tool.uv.build-backend]
+module-name = "mww_trainer"
+
+[build-system]
+requires = ["uv_build>=0.8.0,<0.12"]
+build-backend = "uv_build"

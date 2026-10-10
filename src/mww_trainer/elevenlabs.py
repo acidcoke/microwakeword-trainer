@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Generate high-quality wake word clips using ElevenLabs multilingual v2.
 Works for any language supported by eleven_multilingual_v2 — the phrases
@@ -8,13 +7,17 @@ Outputs WAV files (16kHz mono int16) into training/output/<model_name>/elevenlab
 These get mixed into positive training data during feature extraction.
 
 Usage:
-    .venv/bin/python generate_elevenlabs.py --api-key <KEY> --config ru_jarvis.yaml
+    uv run mww elevenlabs --api-key <KEY> --config ru_jarvis.yaml
+    ELEVENLABS_API_KEY=<KEY> uv run mww elevenlabs --config ru_jarvis.yaml
+
+Needs ffmpeg on PATH to transcode the MP3 responses.
 """
 
 import argparse
 import json
 import os
 import random
+import shutil
 import subprocess
 import sys
 import time
@@ -101,15 +104,23 @@ def generate_clip(api_key: str, voice_id: str, text: str,
     return True
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--api-key", required=True)
+def main(argv=None, prog=None):
+    parser = argparse.ArgumentParser(
+        prog=prog, description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--api-key", default=os.environ.get("ELEVENLABS_API_KEY"),
+                        help="ElevenLabs API key (default: $ELEVENLABS_API_KEY)")
     parser.add_argument("--config", default="ru_jarvis.yaml")
     parser.add_argument("--max-clips", type=int, default=1200,
                         help="Maximum clips to generate (default: 1200)")
     parser.add_argument("--output-dir", default=None,
                         help="Override output directory")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    if not args.api_key:
+        parser.error("--api-key or ELEVENLABS_API_KEY is required")
+    if shutil.which("ffmpeg") is None:
+        parser.error("ffmpeg not found on PATH (e.g. sudo apt install ffmpeg)")
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
@@ -203,7 +214,8 @@ def main():
 
     # Final credit check
     check_credits(args.api_key)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

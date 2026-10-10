@@ -11,7 +11,7 @@ it to training is the fix. If it survives, the channel is not the difference
 and something else is, in which case do not start a multi-hour training run on
 this theory.
 
-    python tools/channel_probe.py --n 12 --out /tmp/channel_probe
+    uv run mww channel-probe --n 12 --out /tmp/channel_probe
 """
 from __future__ import annotations
 
@@ -22,8 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from train_mww import ChannelAugmenter, SAMPLE_RATE  # noqa: E402
+from mww_trainer.pipeline import ChannelAugmenter, SAMPLE_RATE
 
 
 def read_wav(path: Path) -> np.ndarray:
@@ -40,8 +39,11 @@ def write_wav(path: Path, samples: np.ndarray) -> None:
         w.writeframes(np.clip(samples, -32768, 32767).astype("<i2").tobytes())
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
+def main(argv=None, prog=None) -> int:
+    ap = argparse.ArgumentParser(
+        prog=prog, description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     ap.add_argument("--source", type=Path,
                     default=Path("training/output/ru_stop/positive_test"))
     ap.add_argument("--rir-dir", type=Path, default=Path("training/mit_rirs/16khz"))
@@ -49,7 +51,7 @@ def main() -> int:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--n", type=int, default=12)
     ap.add_argument("--seed", type=int, default=0)
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     np.random.seed(args.seed)
     import random

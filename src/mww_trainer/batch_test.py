@@ -1,33 +1,32 @@
-#!/usr/bin/env python3
 """
 Batch-test a set of false-positive WAVs through a trained TFLite model at the
 production cutoff (read from the model's JSON manifest). Prints only a summary:
 which clips still trigger, sorted by max_avg. Non-overlapping inference loop
-mirrors test_mww.py / pymicro_wakeword exactly.
+mirrors `mww test` / pymicro_wakeword exactly.
 
 Usage:
-  python3 batch_test_fps.py --model MODEL.tflite DIR [DIR ...]
+  uv run mww batch-test --model MODEL.tflite DIR [DIR ...]
 """
 import argparse
 import json
 import pathlib
-import importlib.util
 import sys
 
 import numpy as np
 
-_here = pathlib.Path(__file__).resolve().parent
-spec = importlib.util.spec_from_file_location("test_mww", _here / "test_mww.py")
-tm = importlib.util.module_from_spec(spec); spec.loader.exec_module(tm)
+from mww_trainer import evaluate as tm
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+def main(argv=None, prog=None):
+    parser = argparse.ArgumentParser(
+        prog=prog, description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--model", required=True, help="TFLite model path")
     parser.add_argument("--config", default=None,
                         help="JSON manifest (default: model path with .json suffix)")
     parser.add_argument("dirs", nargs="+", help="directories of FP WAV clips")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     model_path = pathlib.Path(args.model)
     config_path = pathlib.Path(args.config) if args.config else model_path.with_suffix(".json")
@@ -36,7 +35,7 @@ def main():
     for d in args.dirs:
         wavs += sorted(pathlib.Path(d).glob("*.wav"))
     if not wavs:
-        print("no wavs found"); sys.exit(1)
+        print("no wavs found"); return 1
 
     micro = json.load(open(config_path)).get("micro", {})
     cutoff = micro.get("probability_cutoff", 0.5)
@@ -69,6 +68,8 @@ def main():
     for thr in (0.99, 0.97, 0.95, 0.90, 0.80):
         print(f"  clips with max_avg >= {thr}: {int((mas >= thr).sum())}")
 
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -573,16 +573,17 @@ def phase_setup(cfg: dict):
         ) from exc
     log.info("  Piper binary: %s", PIPER_BIN)
 
-    # Check microwakeword
+    # Check microwakeword — the model builder, not just the top-level package,
+    # which imports fine even when a regular install has dropped its layers.
     try:
-        import microwakeword  # noqa: F401
+        import microwakeword.mixednet  # noqa: F401
         log.info("  microwakeword: installed")
-    except ImportError:
+    except ImportError as exc:
         raise ImportError(
-            "microwakeword package not installed.\n"
-            "Run setup_mww.sh first, or:\n"
-            "  pip install git+https://github.com/kahrendt/microWakeWord.git"
-        )
+            f"microwakeword is not usable ({exc}).\n"
+            "Run setup_mww.sh: it installs microWakeWord editable, because a\n"
+            "regular pip install leaves out microwakeword.layers."
+        ) from exc
 
     # Check TensorFlow
     try:

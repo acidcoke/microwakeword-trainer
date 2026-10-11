@@ -78,7 +78,13 @@ info "Installing microWakeWord..."
 # Pinned to a known-good commit — microWakeWord pulls in TensorFlow and its
 # API moves between commits. Bump deliberately, then retrain + retest.
 MWW_REF="a70bd740d4e79ee8a8bb3db843fe862b88d5d6b0"
-"$PIP" install "git+https://github.com/kahrendt/microWakeWord.git@${MWW_REF}" \
+# Editable on purpose. Upstream's microwakeword/layers/ has no __init__.py, so
+# setup.py's find_packages() leaves it out of a regular install and building
+# the model fails with "No module named 'microwakeword.layers'". Installed
+# editable, the package imports from the checkout in .venv/src/, where
+# layers/ resolves as a namespace package.
+"$PIP" install --src "$VENV_DIR/src" \
+    -e "git+https://github.com/kahrendt/microWakeWord.git@${MWW_REF}#egg=microwakeword" \
     || error "Failed to install microWakeWord. Check the GitHub repo."
 
 # ---------------------------------------------------------------------------
@@ -153,7 +159,7 @@ import sys
 ok = True
 checks = [
     ("tensorflow",       lambda: __import__("tensorflow").__version__),
-    ("microwakeword",    lambda: __import__("microwakeword") and "ok"),
+    ("microwakeword",    lambda: __import__("microwakeword.mixednet") and "ok"),
     ("pymicro_features", lambda: __import__("pymicro_features") and "ok"),
     ("numpy",            lambda: __import__("numpy").__version__),
     ("yaml",             lambda: __import__("yaml").__version__),

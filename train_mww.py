@@ -80,6 +80,11 @@ PIPER_ESPEAK = PIPER_BIN_DIR / "espeak-ng-data"
 # ===========================================================================
 
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+# TensorFlow reserves nearly all GPU memory the moment it touches a GPU. On a
+# discrete card that only starves other GPU users; on DGX Spark the GPU shares
+# its 128 GB with the CPU, so the same reservation takes the RAM the mmap'd
+# feature arrays and the input pipeline need. Allocate on demand instead.
+os.environ.setdefault("TF_FORCE_GPU_ALLOW_GROWTH", "true")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -190,6 +195,17 @@ def wget(url: str, dest: Path):
 
 def count_wav(d: Path) -> int:
     return len(list(d.glob("*.wav")))
+
+
+def tf_device_summary() -> str:
+    """Where TensorFlow will train. The PyPI wheel for aarch64 (DGX Spark,
+    other ARM64 hosts) is built without CUDA, so there this is the CPU."""
+    import tensorflow as tf
+
+    gpus = tf.config.list_physical_devices("GPU")
+    if gpus:
+        return ", ".join(g.name for g in gpus)
+    return f"CPU ({os.cpu_count()} cores) — this TensorFlow build sees no GPU"
 
 
 def _is_latin(text: str) -> bool:
@@ -545,23 +561,36 @@ def phase_setup(cfg: dict):
             f"Piper binary not found: {PIPER_BIN}\n"
             "Run setup_mww.sh first."
         )
+    # A training/ directory copied from another machine (x86_64 -> DGX Spark)
+    # brings a Piper built for that machine's CPU, which cannot execute here.
+    try:
+        subprocess.run([str(PIPER_BIN.resolve()), "--version"],
+                       capture_output=True, check=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError(
+            f"Piper binary does not run on this machine: {PIPER_BIN} ({exc})\n"
+            "Re-run setup_mww.sh — it replaces a binary built for another CPU."
+        ) from exc
     log.info("  Piper binary: %s", PIPER_BIN)
 
     # Check microwakeword
     try:
-        import microwakeword  # noqa: F401
+        # layers/ is the subpackage a non-editable install leaves out
+        import microwakeword.layers.stream  # noqa: F401
         log.info("  microwakeword: installed")
     except ImportError:
         raise ImportError(
-            "microwakeword package not installed.\n"
+            "microwakeword package not installed (or installed without its "
+            "layers/ subpackage).\n"
             "Run setup_mww.sh first, or:\n"
-            "  pip install git+https://github.com/kahrendt/microWakeWord.git"
+            "  pip install -e git+https://github.com/kahrendt/microWakeWord.git#egg=microwakeword"
         )
 
     # Check TensorFlow
     try:
         import tensorflow as tf
         log.info("  TensorFlow: %s", tf.__version__)
+        log.info("  TensorFlow device: %s", tf_device_summary())
     except ImportError:
         raise ImportError("TensorFlow not found. Run setup_mww.sh first.")
 
@@ -1146,6 +1175,8 @@ def phase_train(cfg: dict):
     log.info("=" * 60)
 
     import tensorflow as tf
+
+    log.info("  Device: %s", tf_device_summary())
 
     model_name = cfg["model_name"]
     base = OUTPUT_DIR / model_name

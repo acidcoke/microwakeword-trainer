@@ -575,13 +575,15 @@ def phase_setup(cfg: dict):
 
     # Check microwakeword
     try:
-        import microwakeword  # noqa: F401
+        # layers/ is the subpackage a non-editable install leaves out
+        import microwakeword.layers.stream  # noqa: F401
         log.info("  microwakeword: installed")
     except ImportError:
         raise ImportError(
-            "microwakeword package not installed.\n"
+            "microwakeword package not installed (or installed without its "
+            "layers/ subpackage).\n"
             "Run setup_mww.sh first, or:\n"
-            "  pip install git+https://github.com/kahrendt/microWakeWord.git"
+            "  pip install -e git+https://github.com/kahrendt/microWakeWord.git#egg=microwakeword"
         )
 
     # Check TensorFlow

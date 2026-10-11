@@ -13,7 +13,7 @@
 #
 #   setsid ./run_v5_chain.sh < /dev/null > /dev/null 2>&1 &
 set -u
-cd /home/kelstar/projects/smart-home/voice/wakework || exit 1
+cd "$(dirname "$0")" || exit 1
 
 F=training/output/ru_stop/mww_features
 LOG=log_ru_stop_v5_chain.txt

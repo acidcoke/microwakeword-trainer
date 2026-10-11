@@ -102,19 +102,46 @@ info "Installing additional dependencies..."
 # 5. Download Piper standalone binary (for TTS clip generation)
 # ---------------------------------------------------------------------------
 PIPER_BIN_DIR="$TRAINING_DIR/piper_binary"
+PIPER_BIN="$PIPER_BIN_DIR/piper/piper"
 mkdir -p "$PIPER_BIN_DIR"
 
-if [[ ! -f "$PIPER_BIN_DIR/piper/piper" ]]; then
-    info "Downloading Piper binary (Linux x86_64)..."
+# Piper is a native binary with one build per CPU. DGX Spark (Grace) and other
+# ARM64 hosts need the aarch64 build; the x86_64 one fails there with "Exec
+# format error" and the generate phase dies on its first clip.
+case "$(uname -m)" in
+    x86_64|amd64)  PIPER_ARCH="x86_64" ;;
+    aarch64|arm64) PIPER_ARCH="aarch64" ;;
+    *) error "No Piper build for $(uname -m) — supported: x86_64, aarch64" ;;
+esac
+
+# CPU a Piper binary was built for, from the ELF e_machine field (byte 18).
+piper_arch() {
+    case "$(od -An -t x1 -j 18 -N 2 "$1" 2>/dev/null | tr -d ' \n')" in
+        3e00) echo "x86_64" ;;
+        b700) echo "aarch64" ;;
+        *)    echo "unknown" ;;
+    esac
+}
+
+# training/ is worth carrying over from another machine (clips, features), but
+# the Piper binary inside it is only good for the CPU it was downloaded on.
+if [[ -f "$PIPER_BIN" && "$(piper_arch "$PIPER_BIN")" != "$PIPER_ARCH" ]]; then
+    warn "Piper binary is $(piper_arch "$PIPER_BIN"), this host is $PIPER_ARCH — replacing it"
+    rm -rf "$PIPER_BIN_DIR/piper"
+fi
+
+if [[ ! -f "$PIPER_BIN" ]]; then
+    PIPER_TGZ="piper_linux_${PIPER_ARCH}.tar.gz"
+    info "Downloading Piper binary (Linux $PIPER_ARCH)..."
     wget -q --show-progress \
-        -O "$PIPER_BIN_DIR/piper_linux_x86_64.tar.gz" \
-        "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_x86_64.tar.gz"
-    tar -xzf "$PIPER_BIN_DIR/piper_linux_x86_64.tar.gz" -C "$PIPER_BIN_DIR"
-    rm -f "$PIPER_BIN_DIR/piper_linux_x86_64.tar.gz"
-    chmod +x "$PIPER_BIN_DIR/piper/piper"
-    info "  Piper binary ready: $PIPER_BIN_DIR/piper/piper"
+        -O "$PIPER_BIN_DIR/$PIPER_TGZ" \
+        "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/$PIPER_TGZ"
+    tar -xzf "$PIPER_BIN_DIR/$PIPER_TGZ" -C "$PIPER_BIN_DIR"
+    rm -f "$PIPER_BIN_DIR/$PIPER_TGZ"
+    chmod +x "$PIPER_BIN"
+    info "  Piper binary ready: $PIPER_BIN"
 else
-    info "  Piper binary already present"
+    info "  Piper binary already present ($PIPER_ARCH)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -145,13 +172,19 @@ for name, fn in checks:
 if not ok:
     print("\nWARNING: some packages are missing — check errors above.")
     sys.exit(1)
+
+# PyPI's aarch64 TensorFlow (DGX Spark) has no CUDA: say so before a long run.
+import tensorflow as tf
+gpus = tf.config.list_physical_devices("GPU")
+print(f"  {'✓' if gpus else '·'}  {'training device':<20} "
+      + (", ".join(g.name for g in gpus) if gpus else "CPU — this TensorFlow build sees no GPU"))
 PYCHECK
 
-# Check piper binary
-if [[ -f "$TRAINING_DIR/piper_binary/piper/piper" ]]; then
-    info "  ✓  piper binary         ready"
+# Check piper binary actually runs here — right CPU, bundled libraries resolve
+if "$PIPER_BIN" --version &>/dev/null; then
+    info "  ✓  piper binary         $("$PIPER_BIN" --version 2>/dev/null) ($PIPER_ARCH)"
 else
-    warn "  ✗  piper binary         NOT FOUND"
+    warn "  ✗  piper binary         does not run on this machine: $PIPER_BIN"
 fi
 
 # ---------------------------------------------------------------------------

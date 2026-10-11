@@ -16,7 +16,7 @@
 # val_loss with restore_best_weights, so a clean-synthesis validation set would
 # select for exactly the failure being fixed.
 set -u
-cd /home/kelstar/projects/smart-home/voice/wakework || exit 1
+cd "$(dirname "$0")" || exit 1
 
 F=training/output/ru_stop/mww_features
 log() { echo "$(date +%H:%M:%S) $*" >> log_ru_stop_v3_chain.txt; }

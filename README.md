@@ -55,7 +55,8 @@ not recoverable by tuning alone.
 
 ## Requirements
 
-- Linux (tested on Ubuntu 22.04, Debian 12, WSL2)
+- Linux on x86_64 (tested on Ubuntu 22.04, Debian 12, WSL2) or ARM64/aarch64,
+  including NVIDIA DGX Spark — see [Running on DGX Spark](#running-on-nvidia-dgx-spark)
 - Python 3.9+ with pip
 - ~15 GB disk space for training data
 - NVIDIA GPU strongly recommended (training takes 8–14 hours on CPU)
@@ -81,6 +82,39 @@ Output files created at the project root after training:
 
 - `<model_name>_mww.tflite` — TFLite model ready for pymicro_wakeword
 - `<model_name>_mww.json` — Deployment manifest with inference parameters
+
+## Running on NVIDIA DGX Spark
+
+DGX Spark is an ARM64 machine: a 20-core Grace CPU and a GB10 GPU sharing
+128 GB of memory, running DGX OS (Ubuntu 24.04, Python 3.12).  The Quick Start
+works on it unchanged — `setup_mww.sh` detects the CPU and downloads Piper's
+aarch64 build.  Every Python dependency has an aarch64 wheel except
+`python-stretch` (pulled in by audiomentations), which pip compiles with the
+build tools setup installs.
+
+**Training runs on the Grace CPU, not the GB10.**  The TensorFlow that PyPI
+serves for aarch64 is built without CUDA, and there is no supported GPU
+TensorFlow for GB10: NVIDIA's TensorFlow containers stopped at 25.02, whose
+CUDA 12.8 predates the chip.  For this pipeline that costs little.  The long
+phases — `generate` (Piper / ONNX Runtime) and `features` (pymicro_features)
+— run on the CPU on every machine, and `train` is already the shortest of
+the heavy phases on a CPU (see [Training Phases](#training-phases)).
+`--phase setup` logs which device TensorFlow will use.
+
+If you install a CUDA-enabled TensorFlow that supports GB10 yourself, the
+trainer sets `TF_FORCE_GPU_ALLOW_GROWTH=true` so TensorFlow allocates GPU
+memory on demand instead of reserving it up front — on Spark that memory is
+the same RAM the feature arrays live in.
+
+**Moving a run over from an x86 machine.**  Copy `training/` (clips,
+features, voices) and your YAML across, but not `.venv/`: run
+`./setup_mww.sh` on the Spark to build a fresh one.  Setup notices the x86_64
+Piper binary inside `training/piper_binary/` and replaces it with the aarch64
+one.  Generated WAVs, `.npy` features and trained models are portable as-is.
+
+**Memory.**  The `features` phase has peaked at ~43 GB on large runs, which
+fits in 128 GB — but on Spark the GPU draws from the same pool, so leave room
+if something else (an LLM server, say) is holding GPU memory at the same time.
 
 ## Training Phases
 
